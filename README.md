@@ -315,7 +315,7 @@ We welcome contributions! Please:
 
 **For questions, feedback, or collaboration:**
 
-- **Aditya Tomar** (Project Lead) — aditya.tomar@miet.ac.in
+- **Aditya Tomar** (Project Lead) — aditya.tomar.cseai.2023@miet.ac.in
 - **Supervisor:** Mr. Vijay Kumar Sharma — vjay.sharma@miet.ac.in
 - **Department:** Computer Science & Engineering (AI), MIET Meerut
 
