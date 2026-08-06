@@ -273,10 +273,10 @@ If you use this project in research or industry applications:
 ```bibtex
 @software{tomar2026aibias,
   title={AI Bias and Fairness Detector},
-  author={Tomar, Aditya and Pal, Akshay and Ameer, Adnan and Parashar, Ansh},
+  author={Aditya Tomar, Adnan Ameer, Akshay Pal, Ansh Parashar},
   year={2026},
-  institution={Meerut Institute of Engineering \& Technology},
-  url={https://github.com/yourusername/ai-bias-fairness-detector},
+  institution={Meerut Institute of Engineering & Technology},
+  url={https://github.com/Adityatomar20012005/ai-bias-fairness-detector},
   note={B.Tech. Capstone Project, supervised by Vijay Kumar Sharma}
 }
 ```
