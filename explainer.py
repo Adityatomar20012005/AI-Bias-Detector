@@ -1,336 +1,354 @@
-def get_verdict(value, metric_type='dp'):
-    if metric_type == 'dp':
-        # Demographic Parity gap
-        if value < 0.05:
-            return '✅ FAIR', 'green'
-        elif value < 0.10:
-            return '⚠️ MILD BIAS', 'orange'
-        else:
-            return '❌ SIGNIFICANT BIAS', 'red'
-    
-    elif metric_type == 'di':
-        # Disparate Impact ratio
-        if value >= 0.8:
-            return '✅ FAIR (≥0.8)', 'green'
-        elif value >= 0.6:
-            return '⚠️ MILD BIAS (0.6–0.8)', 'orange'
-        else:
-            return '❌ SIGNIFICANT BIAS (<0.6)', 'red'
-    
-    elif metric_type == 'eo':
-        # Equalized Odds gap
-        if value < 0.05:
-            return '✅ FAIR', 'green'
-        elif value < 0.10:
-            return '⚠️ MILD BIAS', 'orange'
-        else:
-            return '❌ SIGNIFICANT BIAS', 'red'
-
-
-def explain_demographic_parity(rates_dict, sensitive_col):
-
-    rates = {k: v for k, v in rates_dict.items() if not (isinstance(v, float) and v != v)}  # Remove NaN
-    
-    if not rates:
-        return "No valid data to explain."
-    
-    max_group = max(rates, key=rates.get)
-    min_group = min(rates, key=rates.get)
-    max_rate = rates[max_group]
-    min_rate = rates[min_group]
-    gap = max_rate - min_rate
-    
-    explanation = f"""
-### Demographic Parity: "{sensitive_col}"
-
-**What it means:** Are all groups receiving favorable outcomes at similar rates?
-
-**Your data:**
-- **Best-performing group:** {max_group} gets favorable outcome at {max_rate:.1%}
-- **Worst-performing group:** {min_group} gets favorable outcome at {min_rate:.1%}
-- **Gap:** {gap:.1%}
-
-**Plain English:** 
-If the model is perfectly fair on this metric, both groups should get positive predictions at roughly the same rate.
-The gap of {gap:.1%} means the model favors {max_group} candidates significantly more than {min_group} candidates.
-
-**Verdict:** {get_verdict(gap, 'dp')[0]}
 """
-    return explanation
-
-
-def explain_disparate_impact(di_ratio, sensitive_col):
-    """
-    Plain-English explanation of Disparate Impact
-    """
-    verdict, color = get_verdict(di_ratio, 'di')
-    
-    explanation = f"""
-### Disparate Impact: "{sensitive_col}"
-
-**What it means:** Does the model comply with the EEOC "four-fifths rule"?
-
-**Your ratio:** {di_ratio:.3f}
-
-**Plain English:**
-The U.S. Equal Employment Opportunity Commission uses a 0.8 ratio as a legal threshold in employment cases.
-If the worst-off group gets favorable outcomes at 80% or higher the rate of the best-off group, the disparity is legally considered acceptable.
-
-Your ratio of {di_ratio:.3f} means:
-- If the best group gets 100 positive predictions, the worst group gets only {int(di_ratio * 100)} predictions
-- This disparate treatment is **legally risky** in hiring/credit/lending contexts
-
-**Verdict:** {verdict}
+Fairness Metric Explainer
+Provides plain-English interpretations of fairness metrics
+with legal and regulatory context
 """
-    return explanation
 
 
-def explain_equalized_odds(tpr_dict, fpr_dict, sensitive_col):
-    """
-    Plain-English explanation of Equalized Odds
-    """
-    tpr = {k: v for k, v in tpr_dict.items() if not (isinstance(v, float) and v != v)}
-    fpr = {k: v for k, v in fpr_dict.items() if not (isinstance(v, float) and v != v)}
+class FairnessExplainer:
+    """Explains fairness metrics in non-technical language"""
     
-    if not tpr or not fpr:
-        return "No valid data to explain."
-    
-    tpr_gap = max(tpr.values()) - min(tpr.values())
-    fpr_gap = max(fpr.values()) - min(fpr.values())
-    max_gap = max(tpr_gap, fpr_gap)
-    
-    explanation = f"""
-### Equalized Odds: "{sensitive_col}"
+    def explain_demographic_parity(self, dp_data):
+        """Explain Demographic Parity"""
+        gap = dp_data.get('dp_gap', 0)
+        verdict = dp_data.get('verdict', 'Unknown')
+        
+        explanation = f"""
+### What is Demographic Parity?
 
-**What it means:** Does the model make equally accurate predictions for all groups?
+Demographic Parity means that a model should make positive predictions 
+at roughly the same rate for all groups. In other words, if 30% of 
+applicants are approved for a loan, it should be 30% for all demographic groups.
 
-**Your data:**
-- **TPR Gap (True Positive Rate):** {tpr_gap:.1%} — Difference in correct positive predictions across groups
-- **FPR Gap (False Positive Rate):** {fpr_gap:.1%} — Difference in incorrect positive predictions across groups
+### What does your result mean?
 
-**Details by group:**
-- **True Positive Rates (correctly identifying eligible candidates):**
-{chr(10).join([f"  - {g}: {v:.1%}" for g, v in tpr.items()])}
+**Gap: {gap*100:.2f}%**
 
-- **False Positive Rates (incorrectly giving positive to ineligible candidates):**
-{chr(10).join([f"  - {g}: {v:.1%}" for g, v in fpr.items()])}
+This means there's a {gap*100:.2f}% difference in positive prediction rates 
+between the most-favored and least-favored groups.
 
-**Plain English:**
-Equalized Odds asks: "Does the model make equally good *and equally bad* mistakes across groups?"
+**Verdict: {verdict}**
 
-A gap of {tpr_gap:.1%} in TPR means one group is less likely to be correctly identified as eligible.
-A gap of {fpr_gap:.1%} in FPR means one group is more likely to receive a false positive.
-
-**Verdict:** {get_verdict(max_gap, 'eo')[0]}
 """
-    return explanation
+        
+        if verdict == "Fair":
+            explanation += """
+✅ **GOOD NEWS:** Your model appears to satisfy demographic parity. 
+Groups are receiving positive predictions at similar rates.
 
-def explain_intersectional_demographic_parity(rates_dict, attr1, attr2):
-    """
-    Explain Demographic Parity at intersection of two attributes
-    """
-    rates = {k: v for k, v in rates_dict.items() if not (isinstance(v, float) and v != v)}
-    
-    if not rates:
-        return "No valid intersectional data."
-    
-    # Find best and worst
-    best_group = max(rates, key=rates.get)
-    worst_group = min(rates, key=rates.get)
-    gap = rates[best_group] - rates[worst_group]
-    
-    explanation = f"""
-### Intersectional Demographic Parity: "{attr1}" × "{attr2}"
-
-**What it means:** Are all combinations of {attr1} and {attr2} receiving favorable outcomes equally?
-
-**Key findings:**
-- **Best-performing intersection:** {best_group} → {rates[best_group]:.1%} positive predictions
-- **Worst-performing intersection:** {worst_group} → {rates[worst_group]:.1%} positive predictions
-- **Intersectional gap:** {gap:.1%}
-
-**Why this matters:**
-Checking {attr1} and {attr2} separately might show fairness, but their *intersection* could reveal compound discrimination.
-For example: Women of color might face worse bias than women alone or minorities alone.
-
-**All intersections:**
-{chr(10).join([f"- {group}: {rate:.1%}" for group, rate in sorted(rates.items(), key=lambda x: x[1], reverse=True)])}
-
-**Verdict:** {get_verdict(gap, 'dp')[0]}
+**Implication:** Your model is unlikely to face discrimination lawsuits 
+based on demographic parity alone.
 """
-    return explanation
+        
+        elif verdict == "Mild":
+            explanation += """
+⚠️ **CAUTION:** Your model shows moderate demographic parity concerns.
 
+**Implication:** While not severe, this suggests some group is getting 
+positive predictions significantly less often. Consider:
+- Reviewing your training data for historical bias
+- Testing mitigation strategies (reweighting)
+- Consulting with legal and ethics teams
+"""
+        
+        else:  # Significant
+            explanation += """
+❌ **SERIOUS ISSUE:** Your model violates demographic parity significantly.
 
-def explain_intersectional_disparate_impact(di_ratio, attr1, attr2):
-    """
-    Explain Disparate Impact for intersectional groups
-    """
-    verdict, color = get_verdict(di_ratio, 'di')
+**Implication:** One or more groups is receiving positive predictions 
+at substantially lower rates. This could:
+- Expose your organization to discrimination lawsuits
+- Violate fair lending laws (FCRA)
+- Violate employment discrimination laws (Title VII)
+- Violate EU AI Act requirements (if deployed in EU)
+
+**Recommended Actions:**
+1. Investigate the root cause (data bias, feature engineering, model bias)
+2. Test mitigation strategies immediately
+3. Consult legal counsel before deployment
+4. Consider alternative fairness metrics (Disparate Impact, Equalized Odds)
+"""
+        
+        return explanation
     
-    explanation = f"""
-### Intersectional Disparate Impact: "{attr1}" × "{attr2}"
+    def explain_disparate_impact(self, di_data):
+        """Explain Disparate Impact (EEOC Four-Fifths Rule)"""
+        ratio = di_data.get('di_ratio', 0)
+        verdict = di_data.get('verdict', 'Unknown')
+        
+        explanation = f"""
+### What is Disparate Impact?
 
-**What it means:** Do intersectional groups comply with the EEOC four-fifths rule?
+Disparate Impact (also called the "Four-Fifths Rule") is a legal standard 
+used by the U.S. Equal Employment Opportunity Commission (EEOC).
 
-**Your intersectional DI ratio:** {di_ratio:.3f}
+The rule states: The selection rate for a protected group should be at 
+least 80% (4/5) of the selection rate for the most-favored group.
 
-**Plain English:**
-This ratio compares the *worst-off intersectional group* to the *best-off intersectional group*.
-If {attr1} and {attr2} compound discrimination (they make each other worse), this ratio will be lower than single-attribute DI.
+**Formula:** DI = (Lowest group rate) / (Highest group rate)
 
-**Verdict:** {verdict}
+- **Legal:** DI ≥ 0.80
+- **Gray Zone:** DI 0.60-0.80
+- **Illegal:** DI < 0.60
+
+### What does your result mean?
+
+**DI Ratio: {ratio:.3f}**
+
+This means the least-favored group is receiving positive predictions at 
+{ratio*100:.1f}% the rate of the most-favored group.
+
+**Verdict: {verdict}**
+
+"""
+        
+        if verdict == "Fair":
+            explanation += """
+✅ **LEGALLY SAFE:** Your model passes the EEOC four-fifths rule.
 
 **Implication:** 
-Intersectional bias is often invisible in single-attribute audits. If your single-attribute DI looks fair but 
-this intersectional DI is low, it means one intersection is being systematically disadvantaged.
+- Your organization can defend this model in hiring/lending lawsuits
+- The model is likely compliant with U.S. employment discrimination law
+- Still consider other fairness metrics for comprehensive assessment
+
+**Next Step:** Check Demographic Parity and Equalized Odds metrics as well.
 """
-    return explanation
-
-
-def explain_worst_group_accuracy(wga_dict):
-    """
-    Explain worst-group accuracy findings
-    """
-    worst_acc = wga_dict['worst_accuracy']
-    accuracy_gap = wga_dict['accuracy_gap']
-    worst_cluster = wga_dict['worst_cluster']
-    group_sizes = wga_dict['group_sizes']
-    
-    explanation = f"""
-### Fairness Without Protected Attributes: Worst-Group Accuracy
-
-**What it means:** The model's accuracy varies dramatically across *unsupervised* subgroups—even without knowing demographics.
-
-**Your findings:**
-- **Worst-performing cluster:** Cluster {worst_cluster} with accuracy {worst_acc:.1%} (n={group_sizes[worst_cluster]} samples)
-- **Accuracy gap:** {accuracy_gap:.1%} between best and worst clusters
-- **Overall pattern:** Model is significantly less accurate for some unseen subgroup
-
-**Why this matters:**
-You don't need explicit demographic labels to detect unfairness. If the model performs poorly on an unsupervised cluster,
-that cluster likely contains individuals from a disadvantaged group—even if you don't know *which* group.
-
-**Practical takeaway:**
-Fix the worst-performing cluster's accuracy. This invisible subgroup deserves equal model performance.
-
-**Verdict:** ❌ SIGNIFICANT ACCURACY DISPARITY
-"""
-    return explanation
-
-
-def explain_adversarial_bias(adv_dict):
-    """
-    Explain adversarial bias detection
-    """
-    adv_acc = adv_dict['mean_adversary_accuracy']
-    bias_level = adv_dict['bias_level']
-    
-    interpretation_map = {
-        'low': "Predictions are **independent** of feature patterns—minimal bias",
-        'medium': "Predictions have **moderate correlation** with feature patterns",
-        'high': "Predictions are **strongly driven** by feature patterns—high risk of bias"
-    }
-    
-    explanation = f"""
-### Fairness Without Protected Attributes: Adversarial Bias Detection
-
-**What it means:** Can we predict the model's output just from its input features?
-
-**Your adversarial accuracy:** {adv_acc:.1%}
-
-**Plain English:**
-We trained an adversary that tries to predict your model's decisions from the input features alone.
-If it succeeds (>60% accuracy), your model's predictions are correlated with feature patterns in a way that suggests bias.
-
-**Your result:**
-- Adversary accuracy: {adv_acc:.1%}
-- Bias level: **{bias_level.upper()}**
-- Interpretation: {interpretation_map[bias_level]}
-
-**Random baseline:** An adversary guessing randomly achieves 50% accuracy (binary classification).
-Your adversary achieved {adv_acc:.1%}, meaning predictions are {'' if adv_acc < 0.6 else 'significantly '} feature-dependent.
-
-**Verdict:** {"✅ LOW BIAS RISK" if adv_acc < 0.6 else "⚠️ MODERATE BIAS RISK" if adv_acc < 0.7 else "❌ HIGH BIAS RISK"}
-"""
-    return explanation
-
-
-def explain_proxy_warnings(proxy_warnings):
-    """
-    Explain proxy feature warnings
-    """
-    if not proxy_warnings:
-        return "✅ No significant proxy features detected. Non-sensitive features do not strongly correlate with protected attributes."
-    
-    top_warnings = sorted(proxy_warnings, key=lambda x: x['correlation'], reverse=True)[:5]
-    
-    explanation = f"""
-### Proxy Feature Warnings: Hidden Discrimination
-
-**What it means:** Some non-protected features correlate strongly with protected attributes. 
-Using these features allows discrimination "under the radar."
-
-**Examples from your data:**
-{chr(10).join([f"- **{w['proxy_feature']}** → **{w['sensitive_attr']}** (correlation: {w['correlation']:.3f})" 
-               for w in top_warnings])}
-
-**Plain English:**
-Even if you remove the sensitive attribute (e.g., "gender"), related features (e.g., "name gender", "clothing style") 
-can indirectly re-introduce bias. These are called **proxy features**.
-
-**Why it matters:**
-- **ZIP code** often proxies for race (segregated neighborhoods)
-- **First name** proxies for ethnicity
-- **School type** proxies for socioeconomic status and race
-- **Age-related features** can proxy for protected classes
-
-**Recommendation:**
-Review features with high correlations. Either:
-1. Remove or anonymize them if they're not essential
-2. Audit the model's performance on subgroups defined by these proxies
-3. Apply fairness constraints to reduce their influence
-
-**Verdict:** ⚠️ AUDIT REQUIRED
-"""
-    return explanation
-
-
-def generate_full_explanation(bias_results, sensitive_col='all', include_intersectional=True, 
-                             include_fairness_without_demographics=True):
-    """
-    Generate comprehensive explanation of all findings
-    """
-    all_explanations = []
-    
-    # Standard metrics
-    if sensitive_col == 'all':
-        columns_to_explain = list(bias_results['sensitive_test'].keys())
-    else:
-        columns_to_explain = [sensitive_col]
-    
-    for col in columns_to_explain:
-        metrics = bias_results['metrics'][col]
         
-        all_explanations.append(explain_demographic_parity(metrics['demographic_parity'], col))
-        all_explanations.append(explain_disparate_impact(metrics['disparate_impact'], col))
-        all_explanations.append(explain_equalized_odds(metrics['equalized_odds']['tpr'],
-                                                       metrics['equalized_odds']['fpr'], col))
+        elif verdict == "Mild":
+            explanation += """
+⚠️ **LEGAL GRAY ZONE:** Your model is approaching the EEOC threshold.
+
+**Implication:**
+- This could be challenged in court but has some defense
+- EEOC may investigate if formal complaint is filed
+- Demonstrates some discriminatory impact
+
+**Recommended Actions:**
+1. Gather documentation showing business necessity
+2. Show you've tested alternative hiring/lending standards
+3. Test mitigation strategies to improve DI
+4. Consult legal counsel
+"""
+        
+        else:  # Significant
+            explanation += """
+❌ **LEGALLY RISKY:** Your model violates the EEOC four-fifths rule.
+
+**Implication:**
+- This is illegal under Title VII of the Civil Rights Act (employment)
+- This violates the Fair Credit Reporting Act (FCRA) for lending
+- EEOC can sue your organization
+- Individual plaintiffs can file discrimination lawsuits
+- Damages can include back pay, lost benefits, and punitive damages
+
+**Mandatory Actions:**
+1. DO NOT DEPLOY this model without mitigation
+2. Consult legal counsel IMMEDIATELY
+3. Test reweighting/suppression mitigation strategies
+4. Consider alternative fairness metrics
+5. Investigate the source of discrimination in your data/model
+"""
+        
+        return explanation
     
-    # Intersectional explanations
-    if include_intersectional and 'intersectional_metrics' in bias_results:
-        for intersection_key, intersection_metrics in bias_results['intersectional_metrics'].items():
-            attr1, attr2 = intersection_key.split(' × ')
-            all_explanations.append(explain_intersectional_demographic_parity(
-                intersection_metrics['demographic_parity'], attr1, attr2))
-            all_explanations.append(explain_intersectional_disparate_impact(
-                intersection_metrics['disparate_impact'], attr1, attr2))
+    def explain_equalized_odds(self, eo_data):
+        """Explain Equalized Odds"""
+        tpr_gap = eo_data.get('tpr_gap', 0)
+        fpr_gap = eo_data.get('fpr_gap', 0)
+        verdict = eo_data.get('verdict', 'Unknown')
+        
+        explanation = f"""
+### What is Equalized Odds?
+
+Equalized Odds means that a model should have:
+- **Equal True Positive Rates (TPR)** across groups: If someone truly 
+  deserves a positive outcome, the model should recognize it at the same rate
+- **Equal False Positive Rates (FPR)** across groups: If someone truly 
+  doesn't deserve a positive outcome, the model should correctly reject them 
+  at the same rate
+
+This ensures the model makes errors equally across groups.
+
+**Reference:** Hardt et al. 2016 (NeurIPS) - "Equality of Opportunity in Supervised Learning"
+
+### What does your result mean?
+
+**TPR Gap: {tpr_gap*100:.2f}%**
+**FPR Gap: {fpr_gap*100:.2f}%**
+
+- TPR Gap measures if some groups are wrongly rejected more often
+- FPR Gap measures if some groups are wrongly approved more often
+
+**Verdict: {verdict}**
+
+"""
+        
+        if verdict == "Fair":
+            explanation += """
+✅ **EXCELLENT:** Your model satisfies equalized odds.
+
+**Implication:**
+- Your model treats all groups equally in terms of true positives and false positives
+- Errors are distributed fairly across groups
+- This is one of the strongest fairness guarantees
+
+**Advantage:** Unlike Demographic Parity, this metric considers prediction accuracy
+and doesn't require equal approval rates (just equal error rates).
+"""
+        
+        elif verdict == "Mild":
+            explanation += """
+⚠️ **CAUTION:** Your model shows moderate equalized odds issues.
+
+**Implication:**
+- Errors are not distributed equally across groups
+- Some group is being wrongly rejected OR wrongly approved more often
+- This could violate equal protection principles
+
+**Investigation needed:**
+- Is TPR gap high? Some groups are being "false negatives" - rejected unfairly
+- Is FPR gap high? Some groups are being "false positives" - approved unfairly
+- What's causing these differences? Data bias? Feature engineering? Model choice?
+"""
+        
+        else:  # Significant
+            explanation += """
+❌ **SERIOUS ISSUE:** Your model violates equalized odds significantly.
+
+**Implication:**
+- The model makes errors very differently across groups
+- This is unfair and could face legal challenges
+- May violate equal protection under the law
+- Could expose organization to discrimination claims
+
+**What's happening:**
+- High TPR gap: Some groups are being rejected unfairly (higher false negatives)
+- High FPR gap: Some groups are being approved unfairly (higher false positives)
+
+**Recommended Actions:**
+1. Analyze which group is disadvantaged
+2. Investigate data collection and model training for bias
+3. Test fairness-aware learning algorithms
+4. Consider constraint-based optimization for equalized odds
+"""
+        
+        return explanation
     
-    # Fairness without demographics explanations
-    if include_fairness_without_demographics and 'fairness_without_demographics' in bias_results:
-        fwd = bias_results['fairness_without_demographics']
-        all_explanations.append(explain_worst_group_accuracy(fwd['worst_group_accuracy']))
-        all_explanations.append(explain_adversarial_bias(fwd['adversarial_bias']))
-        if fwd['proxy_warnings']:
-            all_explanations.append(explain_proxy_warnings(fwd['proxy_warnings']))
+    def explain_intersectional_fairness(self, intersectional_data):
+        """Explain intersectional fairness findings"""
+        explanation = """
+### What is Intersectional Fairness?
+
+Intersectional fairness recognizes that people belong to multiple groups 
+at once. For example, someone can be both a woman AND a racial minority. 
+Bias can compound at these intersections.
+
+**Example:** A model might be fair to women overall, fair to minorities 
+overall, but severely biased against Black women specifically.
+
+### Why does this matter?
+
+Research shows that single-attribute fairness audits miss 40-70% of 
+discrimination. Only by examining intersections can you find hidden bias.
+
+### Your intersectional findings:
+
+"""
+        
+        for pair, metrics in intersectional_data.items():
+            di_ratio = metrics.get('di_ratio', 0)
+            dp_gap = metrics.get('dp_gap', 0)
+            verdict = metrics.get('verdict', 'Unknown')
+            
+            explanation += f"""
+**{pair}:**
+- DI Ratio: {di_ratio:.3f}
+- DP Gap: {dp_gap*100:.2f}%
+- Verdict: {verdict}
+
+"""
+        
+        explanation += """
+### What this means:
+
+If you see "Significant" verdicts for intersectional groups, it means:
+- Your model might be overall fair to single attributes
+- But severely discriminates against people at the intersection
+- This requires targeted mitigation
+
+### Recommended Action:
+
+If any intersection shows bias, consider:
+1. Stratified analysis by intersection (not just overall)
+2. Targeted mitigation for specific intersections
+3. Broader data collection or balancing for disadvantaged intersections
+"""
+        
+        return explanation
     
-    return all_explanations
+    def explain_fairness_without_demographics(self, fwd_data):
+        """Explain fairness-without-demographics findings"""
+        explanation = """
+### What is Fairness Without Protected Attributes?
+
+In some domains (healthcare, government), storing demographic data is:
+- Illegal under GDPR/HIPAA
+- Ethically problematic
+- Risky for data breaches
+
+Fairness-without-demographics uses unsupervised techniques to detect bias 
+WITHOUT needing demographic labels.
+
+### Three techniques we use:
+
+**1. Worst-Group Accuracy**
+- Clusters data into groups WITHOUT demographic labels
+- Finds the group where model accuracy is lowest
+- If overall accuracy is high but worst-group accuracy is low → hidden bias
+
+**2. Adversarial Bias Detection**
+- Trains an "adversary" model to predict model decisions from features alone
+- If adversary can predict decisions well → decisions depend on feature patterns
+- If adversary can't predict → decisions are more independent
+
+**3. Proxy Attribute Warnings**
+- Identifies features that correlate with protected attributes
+- These "proxy" features can cause indirect discrimination
+- Example: ZIP code correlates with race, causing racial discrimination
+
+### Your results:
+
+"""
+        
+        if 'worst_group_accuracy' in fwd_data:
+            wga = fwd_data['worst_group_accuracy']
+            explanation += f"**Worst-Group Accuracy:** {wga*100:.2f}%\n"
+            if wga < 0.7:
+                explanation += "⚠️ This is significantly lower than overall accuracy - hidden bias likely\n\n"
+            else:
+                explanation += "✅ Reasonable worst-group accuracy\n\n"
+        
+        if 'adversarial_bias_score' in fwd_data:
+            abs_score = fwd_data['adversarial_bias_score']
+            explanation += f"**Adversarial Bias Score:** {abs_score:.3f}\n"
+            if abs_score > 0.7:
+                explanation += "⚠️ HIGH RISK - Model decisions are driven by feature patterns\n\n"
+            elif abs_score > 0.6:
+                explanation += "⚠️ MEDIUM RISK - Some decision correlation with features\n\n"
+            else:
+                explanation += "✅ LOW RISK - Decisions are relatively independent of features\n\n"
+        
+        if 'proxy_warnings' in fwd_data:
+            explanation += f"**Proxy Warnings:** {len(fwd_data['proxy_warnings'])} potential proxy features identified\n"
+            explanation += "Review these features for potential indirect discrimination\n"
+        
+        explanation += """
+### What to do:
+
+1. Use these results even without demographic data
+2. If worst-group accuracy is low → investigate feature engineering
+3. If adversarial score is high → consider feature suppression
+4. Check proxy features in your feature engineering pipeline
+"""
+        
+        return explanation
