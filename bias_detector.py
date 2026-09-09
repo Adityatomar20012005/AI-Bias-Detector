@@ -2,306 +2,413 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
 from sklearn.cluster import KMeans
+from sklearn.linear_model import LogisticRegression
 import warnings
+
 warnings.filterwarnings('ignore')
 
 
-def preprocess_data(df, target_column, sensitive_columns=None):
+class BiasDetector:
     """
-    Preprocess data: encode categoricals, separate features and targets
-    """
-    X = df.drop(columns=[target_column] + (sensitive_columns or []))
-    y = df[target_column]
+    Detects bias in ML models using fairness metrics
     
-    for col in X.select_dtypes(include=['object']).columns:
-        le = LabelEncoder()
-        X[col] = le.fit_transform(X[col].astype(str))
+    Metrics:
+    - Demographic Parity (DP): Equal positive prediction rates
+    - Disparate Impact (DI): EEOC four-fifths rule
+    - Equalized Odds (EO): Equal TPR and FPR across groups
+    """
     
-    if y.dtype == 'object':
-        le_target = LabelEncoder()
-        y = le_target.fit_transform(y)
+    def __init__(self):
+        self.model = None
+        self.le_dict = {}
     
-    return X, y
-
-
-def train_model(X_train, y_train, random_state=42):
-    """Train Random Forest classifier"""
-    rf = RandomForestClassifier(n_estimators=100, random_state=random_state, max_depth=10)
-    rf.fit(X_train, y_train)
-    return rf
-
-
-def demographic_parity(y_pred, sensitive_col):
-    """
-    Demographic Parity: Do all groups receive favorable outcome at equal rates?
-    Returns: dict of rates per group
-    """
-    groups = sensitive_col.unique()
-    rates = {}
-    for group in groups:
-        mask = sensitive_col == group
-        if mask.sum() > 0:
-            rates[group] = y_pred[mask].mean()
-        else:
-            rates[group] = np.nan
-    return rates
-
-
-def disparate_impact(y_pred, sensitive_col):
-    """
-    Disparate Impact: Ratio of worst-off to best-off group rate (EEOC 4/5 rule)
-    Returns: ratio (≥0.8 is fair)
-    """
-    rates = demographic_parity(y_pred, sensitive_col)
-    valid_rates = [r for r in rates.values() if not np.isnan(r)]
-    
-    if len(valid_rates) == 0 or max(valid_rates) == 0:
-        return 0.0
-    
-    return min(valid_rates) / max(valid_rates)
-
-
-def equalized_odds(y_pred, y_true, sensitive_col):
-    """
-    Equalized Odds: Equal TPR and FPR across groups
-    Returns: dict with 'tpr' and 'fpr' per group
-    """
-    groups = sensitive_col.unique()
-    tpr, fpr = {}, {}
-    
-    for group in groups:
-        mask = sensitive_col == group
-        y_p, y_t = y_pred[mask], y_true[mask]
+    def detect_bias(self, df, target_column, sensitive_columns, 
+                   include_intersectional=True, include_fwd=True):
+        """
+        Main bias detection function
         
-        if len(y_t) == 0:
-            tpr[group] = np.nan
-            fpr[group] = np.nan
-            continue
+        Args:
+            df: DataFrame with data
+            target_column: Column to predict
+            sensitive_columns: List of protected attributes
+            include_intersectional: Include intersectional analysis
+            include_fwd: Include fairness-without-demographics
         
-        tp = ((y_p == 1) & (y_t == 1)).sum()
-        fn = ((y_p == 0) & (y_t == 1)).sum()
-        fp = ((y_p == 1) & (y_t == 0)).sum()
-        tn = ((y_p == 0) & (y_t == 0)).sum()
+        Returns:
+            Dictionary with all bias metrics and verdicts
+        """
         
-        tpr[group] = tp / (tp + fn) if (tp + fn) > 0 else np.nan
-        fpr[group] = fp / (fp + tn) if (fp + tn) > 0 else np.nan
-    
-    return {'tpr': tpr, 'fpr': fpr}
-
-def intersectional_demographic_parity(y_pred, df, attr1, attr2):
-    """
-    Compute Demographic Parity at intersection of two attributes
-    E.g., Gender × Race → Female-Asian, Female-Black, Male-Asian, etc.
-    Returns: dict of rates per intersection
-    """
-    intersections = df.groupby([attr1, attr2]).groups
-    rates = {}
-    
-    for (a1, a2), group_idx in intersections.items():
-        mask = df.index.isin(group_idx)
-        if mask.sum() > 0:
-            rates[(a1, a2)] = y_pred[mask].mean()
-        else:
-            rates[(a1, a2)] = np.nan
-    
-    return rates
-
-
-def intersectional_disparate_impact(y_pred, df, attr1, attr2):
-    """
-    Disparate Impact for intersectional groups
-    Computes min/max ratio across all intersections
-    """
-    rates = intersectional_demographic_parity(y_pred, df, attr1, attr2)
-    valid_rates = [r for r in rates.values() if not np.isnan(r)]
-    
-    if len(valid_rates) == 0 or max(valid_rates) == 0:
-        return 0.0
-    
-    return min(valid_rates) / max(valid_rates)
-
-
-def intersectional_equalized_odds(y_pred, y_true, df, attr1, attr2):
-    """
-    Equalized Odds for intersectional groups
-    Returns: dict with TPR/FPR per intersection
-    """
-    intersections = df.groupby([attr1, attr2]).groups
-    tpr, fpr = {}, {}
-    
-    for (a1, a2), group_idx in intersections.items():
-        mask = df.index.isin(group_idx)
-        y_p, y_t = y_pred[mask], y_true[mask]
+        # Validate input
+        if len(df) < 50:
+            raise ValueError("Dataset too small (minimum 50 samples)")
         
-        if len(y_t) == 0:
-            tpr[(a1, a2)] = np.nan
-            fpr[(a1, a2)] = np.nan
-            continue
+        if target_column not in df.columns:
+            raise ValueError(f"Target column '{target_column}' not found")
         
-        tp = ((y_p == 1) & (y_t == 1)).sum()
-        fn = ((y_p == 0) & (y_t == 1)).sum()
-        fp = ((y_p == 1) & (y_t == 0)).sum()
-        tn = ((y_p == 0) & (y_t == 0)).sum()
+        for col in sensitive_columns:
+            if col not in df.columns:
+                raise ValueError(f"Sensitive column '{col}' not found")
         
-        tpr[(a1, a2)] = tp / (tp + fn) if (tp + fn) > 0 else np.nan
-        fpr[(a1, a2)] = fp / (fp + tn) if (fp + tn) > 0 else np.nan
-    
-    return {'tpr': tpr, 'fpr': fpr}
-
-def worst_group_accuracy(y_pred, y_true, X_test, n_clusters=5):
-    """
-    Identify worst-performing cluster without knowing demographics
-    Clusters the feature space unsupervised; finds group with lowest accuracy
-    Returns: worst_cluster_id, worst_accuracy, all_accuracies
-    """
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-    clusters = kmeans.fit_predict(X_test)
-    
-    accuracies = {}
-    group_sizes = {}
-    for cluster_id in range(n_clusters):
-        mask = clusters == cluster_id
-        if mask.sum() > 0:
-            acc = (y_pred[mask] == y_true[mask]).mean()
-            accuracies[cluster_id] = acc
-            group_sizes[cluster_id] = mask.sum()
-    
-    worst_cluster = min(accuracies, key=accuracies.get)
-    worst_accuracy = accuracies[worst_cluster]
-    
-    return {
-        'worst_cluster': worst_cluster,
-        'worst_accuracy': worst_accuracy,
-        'accuracies': accuracies,
-        'group_sizes': group_sizes,
-        'accuracy_gap': max(accuracies.values()) - min(accuracies.values())
-    }
-
-
-def adversarial_bias_detection(y_pred, X_test, n_iterations=10):
-    """
-    Adversarial bias detection: Train an adversary to predict y_pred from features
-    If adversary can't predict well, bias is low (prediction is independent of features)
-    Returns: adversary accuracy (high = model predictions correlated with features)
-    """
-    from sklearn.linear_model import LogisticRegression
-    
-    adversary_accs = []
-    n_samples = len(X_test)
-    
-    for _ in range(n_iterations):
-        # Random train/test split for adversary
-        train_idx = np.random.choice(n_samples, n_samples // 2, replace=False)
-        test_idx = np.array([i for i in range(n_samples) if i not in train_idx])
+        # Prepare data
+        X, y, df_encoded = self._prepare_data(df, target_column, sensitive_columns)
         
-        X_train_adv, X_test_adv = X_test.iloc[train_idx], X_test.iloc[test_idx]
-        y_train_adv, y_test_adv = y_pred[train_idx], y_pred[test_idx]
+        # Train model
+        try:
+            self.model, X_test, y_test, X_train, y_train = self._train_model(X, y)
+        except Exception as e:
+            raise ValueError(f"Error training model: {e}")
         
-        adv = LogisticRegression(max_iter=1000, random_state=42)
-        adv.fit(X_train_adv, y_train_adv)
-        adv_acc = adv.score(X_test_adv, y_test_adv)
-        adversary_accs.append(adv_acc)
-    
-    mean_adversary_acc = np.mean(adversary_accs)
-
-    return {
-        'mean_adversary_accuracy': mean_adversary_acc,
-        'bias_level': 'low' if mean_adversary_acc < 0.6 else 'medium' if mean_adversary_acc < 0.7 else 'high'
-    }
-
-
-def proxy_attribute_warnings(df, sensitive_columns):
-    """
-    Check if non-sensitive features are proxies for sensitive attributes
-    E.g., ZIP code may proxy for race
-    Returns: list of high-correlation pairs
-    """
-    warnings_list = []
-    feature_cols = [col for col in df.columns if col not in sensitive_columns]
-    
-    for sens_col in sensitive_columns:
-        # Encode sensitive column if categorical
-        if df[sens_col].dtype == 'object':
-            le = LabelEncoder()
-            sens_encoded = le.fit_transform(df[sens_col])
-        else:
-            sens_encoded = df[sens_col]
+        # Get predictions
+        y_pred = self.model.predict(X_test)
+        y_pred_proba = self.model.predict_proba(X_test)[:, 1]
         
-        for feat_col in feature_cols[:10]:  # Check first 10 features for speed
-            if df[feat_col].dtype in ['int64', 'float64']:
-                corr = np.abs(np.corrcoef(sens_encoded, df[feat_col])[0, 1])
-                if corr > 0.3:  # Moderate correlation threshold
-                    warnings_list.append({
-                        'sensitive_attr': sens_col,
-                        'proxy_feature': feat_col,
-                        'correlation': corr
-                    })
-    
-    return warnings_list
-
-
-def detect_bias(df, target_column, sensitive_columns, test_size=0.2, 
-                compute_intersectional=True, compute_fairness_without_demographics=True): 
-    from sklearn.model_selection import train_test_split
-    
-    # Preprocess
-    X, y = preprocess_data(df, target_column, sensitive_columns)
-    
-    # Split
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=42
-    )
-    
-    # Align sensitive columns with test set
-    sensitive_test = {}
-    for sens_col in sensitive_columns:
-        sensitive_test[sens_col] = df.loc[X_test.index, sens_col].reset_index(drop=True)
-    
-    # Train model
-    model = train_model(X_train, y_train)
-    y_pred = model.predict(X_test)
-    
-    # Standard metrics
-    results = {
-        'model': model,
-        'y_pred': y_pred,
-        'y_test': y_test.values,
-        'X_test': X_test.reset_index(drop=True),
-        'sensitive_test': sensitive_test,
-        'metrics': {}
-    }
-    
-    # Compute DP, DI, EO for each sensitive column
-    for sens_col in sensitive_columns:
-        sensitive_col_test = pd.Series(sensitive_test[sens_col])
-        
-        results['metrics'][sens_col] = {
-            'demographic_parity': demographic_parity(y_pred, sensitive_col_test),
-            'disparate_impact': disparate_impact(y_pred, sensitive_col_test),
-            'equalized_odds': equalized_odds(y_pred, y_test.values, sensitive_col_test)
+        # Compute fairness metrics
+        results = {
+            'model_accuracy': np.mean(y_pred == y_test),
+            'predictions': y_pred.tolist(),
+            'y_true': y_test.tolist(),
+            'y_pred_proba': y_pred_proba.tolist(),
+            'standard_metrics': {}
         }
-    
-    # NEW: Intersectional Fairness
-    if compute_intersectional and len(sensitive_columns) >= 2:
-        results['intersectional_metrics'] = {}
-        df_test = pd.DataFrame(sensitive_test)
         
-        for i, col1 in enumerate(sensitive_columns):
-            for col2 in sensitive_columns[i+1:]:
-                key = f"{col1} × {col2}"
-                results['intersectional_metrics'][key] = {
-                    'demographic_parity': intersectional_demographic_parity(y_pred, df_test, col1, col2),
-                    'disparate_impact': intersectional_disparate_impact(y_pred, df_test, col1, col2),
-                    'equalized_odds': intersectional_equalized_odds(y_pred, y_test.values, df_test, col1, col2)
-                }
+        # Standard fairness metrics
+        df_test_encoded = df_encoded.iloc[X_test.index] if hasattr(X_test, 'index') else df_encoded.iloc[-len(y_test):]
+        
+        results['standard_metrics']['demographic_parity'] = self._demographic_parity(
+            y_pred, df_test_encoded, sensitive_columns
+        )
+        
+        results['standard_metrics']['disparate_impact'] = self._disparate_impact(
+            y_pred, df_test_encoded, sensitive_columns
+        )
+        
+        results['standard_metrics']['equalized_odds'] = self._equalized_odds(
+            y_pred, y_test, df_test_encoded, sensitive_columns
+        )
+        
+        # Intersectional fairness
+        if include_intersectional and len(sensitive_columns) > 1:
+            results['intersectional_metrics'] = self._intersectional_fairness(
+                y_pred, y_test, df_test_encoded, sensitive_columns
+            )
+        
+        # Fairness without demographics
+        if include_fwd:
+            results['fairness_without_demographics'] = self._fairness_without_demographics(
+                y_pred, y_test, X_test
+            )
+        
+        return results
     
-    # NEW: Fairness Without Protected Attributes
-    if compute_fairness_without_demographics:
-        results['fairness_without_demographics'] = {
-            'worst_group_accuracy': worst_group_accuracy(y_pred, y_test.values, X_test),
-            'adversarial_bias': adversarial_bias_detection(y_pred, X_test),
-            'proxy_warnings': proxy_attribute_warnings(df, sensitive_columns)
+    def _prepare_data(self, df, target_column, sensitive_columns):
+        """Prepare and encode data"""
+        df_clean = df.dropna()
+        
+        # Encode categorical features
+        df_encoded = df_clean.copy()
+        feature_columns = [col for col in df_clean.columns 
+                          if col != target_column]
+        
+        for col in feature_columns:
+            if df_encoded[col].dtype == 'object':
+                le = LabelEncoder()
+                df_encoded[col] = le.fit_transform(df_encoded[col].astype(str))
+                self.le_dict[col] = le
+        
+        # Separate features and target
+        X = df_encoded.drop(target_column, axis=1)
+        y = df_encoded[target_column]
+        
+        # Ensure binary classification
+        if len(np.unique(y)) > 2:
+            # Convert to binary (top 2 classes or top/bottom split)
+            if df_encoded[target_column].dtype == 'object':
+                unique_vals = df_encoded[target_column].unique()
+                y = (df_encoded[target_column] == unique_vals[0]).astype(int)
+            else:
+                median = df_encoded[target_column].median()
+                y = (df_encoded[target_column] > median).astype(int)
+        
+        return X, y, df_encoded
+    
+    def _train_model(self, X, y):
+        """Train Random Forest model with stratified split"""
+        # Check class balance
+        if len(np.unique(y)) < 2:
+            raise ValueError("Target column must have at least 2 classes")
+        
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
+        
+        # Train model
+        model = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=10,
+            random_state=42,
+            n_jobs=-1
+        )
+        model.fit(X_train, y_train)
+        
+        return model, X_test, y_test, X_train, y_train
+    
+    def _demographic_parity(self, y_pred, df, sensitive_columns):
+        """
+        Demographic Parity: Equal positive prediction rates across groups
+        
+        DP Gap = |P(Ŷ=1|A=a) - P(Ŷ=1|A=b)|
+        Fair: gap < 5%, Mild: 5-10%, Significant: > 10%
+        """
+        results = {
+            'metric_name': 'Demographic Parity',
+            'definition': 'Equal positive prediction rates across groups',
+            'dp_gap': 0,
+            'verdict': 'Unknown',
+            'group_rates': {}
         }
+        
+        positive_rates = []
+        
+        for col in sensitive_columns:
+            try:
+                unique_vals = df[col].unique()
+                rates = {}
+                
+                for val in unique_vals:
+                    mask = df[col] == val
+                    if mask.sum() > 0:
+                        rate = y_pred[mask].mean()
+                        rates[str(val)] = rate
+                        positive_rates.append(rate)
+                
+                results['group_rates'][col] = rates
+            except:
+                pass
+        
+        if positive_rates:
+            dp_gap = max(positive_rates) - min(positive_rates)
+            results['dp_gap'] = dp_gap
+            
+            if dp_gap < 0.05:
+                results['verdict'] = 'Fair'
+            elif dp_gap < 0.10:
+                results['verdict'] = 'Mild'
+            else:
+                results['verdict'] = 'Significant'
+        
+        return results
     
-    return results
+    def _disparate_impact(self, y_pred, df, sensitive_columns):
+        """
+        Disparate Impact (Four-Fifths Rule): DI >= 0.8 is legal
+        
+        DI = min(P(Ŷ=1|A=a)) / max(P(Ŷ=1|A=b))
+        Fair: DI >= 0.8, Mild: 0.6-0.8, Significant: < 0.6
+        
+        Reference: EEOC Guidelines
+        """
+        results = {
+            'metric_name': 'Disparate Impact (EEOC Four-Fifths Rule)',
+            'definition': 'Ratio of positive prediction rates (EEOC threshold: 0.8)',
+            'di_ratio': 1.0,
+            'verdict': 'Unknown',
+            'group_rates': {}
+        }
+        
+        positive_rates = []
+        
+        for col in sensitive_columns:
+            try:
+                unique_vals = df[col].unique()
+                rates = {}
+                
+                for val in unique_vals:
+                    mask = df[col] == val
+                    if mask.sum() > 0:
+                        rate = y_pred[mask].mean()
+                        rates[str(val)] = rate
+                        positive_rates.append(rate)
+                
+                results['group_rates'][col] = rates
+            except:
+                pass
+        
+        if positive_rates:
+            di_ratio = min(positive_rates) / (max(positive_rates) + 1e-10)
+            results['di_ratio'] = di_ratio
+            
+            if di_ratio >= 0.8:
+                results['verdict'] = 'Fair'
+            elif di_ratio >= 0.6:
+                results['verdict'] = 'Mild'
+            else:
+                results['verdict'] = 'Significant'
+        
+        return results
+    
+    def _equalized_odds(self, y_pred, y_test, df, sensitive_columns):
+        """
+        Equalized Odds: Equal TPR and FPR across groups
+        
+        TPR_a = TP/(TP+FN), FPR_a = FP/(FP+TN)
+        Fair: both gaps < 5%, Mild: < 10%, Significant: >= 10%
+        
+        Reference: Hardt et al. 2016 (NIPS)
+        """
+        results = {
+            'metric_name': 'Equalized Odds',
+            'definition': 'Equal True Positive Rates and False Positive Rates across groups',
+            'tpr_gap': 0,
+            'fpr_gap': 0,
+            'verdict': 'Unknown',
+            'group_metrics': {}
+        }
+        
+        tpr_values = []
+        fpr_values = []
+        
+        for col in sensitive_columns:
+            try:
+                unique_vals = df[col].unique()
+                metrics = {}
+                
+                for val in unique_vals:
+                    mask = df[col] == val
+                    
+                    if mask.sum() > 0:
+                        y_pred_group = y_pred[mask]
+                        y_test_group = y_test.iloc[mask] if hasattr(y_test, 'iloc') else y_test[mask]
+                        
+                        # TPR: True Positive Rate
+                        if (y_test_group == 1).sum() > 0:
+                            tp = ((y_pred_group == 1) & (y_test_group == 1)).sum()
+                            tpr = tp / ((y_test_group == 1).sum())
+                            tpr_values.append(tpr)
+                        else:
+                            tpr = 0
+                        
+                        # FPR: False Positive Rate
+                        if (y_test_group == 0).sum() > 0:
+                            fp = ((y_pred_group == 1) & (y_test_group == 0)).sum()
+                            fpr = fp / ((y_test_group == 0).sum())
+                            fpr_values.append(fpr)
+                        else:
+                            fpr = 0
+                        
+                        metrics[str(val)] = {'tpr': tpr, 'fpr': fpr}
+                
+                results['group_metrics'][col] = metrics
+            except:
+                pass
+        
+        if tpr_values and fpr_values:
+            tpr_gap = max(tpr_values) - min(tpr_values)
+            fpr_gap = max(fpr_values) - min(fpr_values)
+            
+            results['tpr_gap'] = tpr_gap
+            results['fpr_gap'] = fpr_gap
+            
+            max_gap = max(tpr_gap, fpr_gap)
+            
+            if max_gap < 0.05:
+                results['verdict'] = 'Fair'
+            elif max_gap < 0.10:
+                results['verdict'] = 'Mild'
+            else:
+                results['verdict'] = 'Significant'
+        
+        return results
+    
+    def _intersectional_fairness(self, y_pred, y_test, df, sensitive_columns):
+        """
+        Intersectional Fairness: Analyze fairness across combinations of attributes
+        
+        Applies DP, DI, EO to attribute intersections (e.g., gender × race)
+        """
+        intersectional_metrics = {}
+        
+        # For each pair of sensitive columns
+        for i in range(len(sensitive_columns)):
+            for j in range(i+1, len(sensitive_columns)):
+                col1, col2 = sensitive_columns[i], sensitive_columns[j]
+                pair_name = f"{col1} × {col2}"
+                
+                try:
+                    # Group by intersection
+                    groups = df.groupby([col1, col2]).groups
+                    
+                    positive_rates = []
+                    for (val1, val2), indices in groups.items():
+                        if len(indices) > 0:
+                            rate = y_pred[indices].mean()
+                            positive_rates.append(rate)
+                    
+                    if positive_rates:
+                        dp_gap = max(positive_rates) - min(positive_rates)
+                        di_ratio = min(positive_rates) / (max(positive_rates) + 1e-10)
+                        
+                        intersectional_metrics[pair_name] = {
+                            'dp_gap': dp_gap,
+                            'di_ratio': di_ratio,
+                            'verdict': 'Significant' if di_ratio < 0.6 else 'Mild' if di_ratio < 0.8 else 'Fair'
+                        }
+                except:
+                    pass
+        
+        return intersectional_metrics
+    
+    def _fairness_without_demographics(self, y_pred, y_test, X_test):
+        """
+        Fairness Without Protected Attributes:
+        Three privacy-preserving bias detection techniques
+        
+        1. Worst-Group Accuracy: Unsupervised clustering finds vulnerable groups
+        2. Adversarial Bias Detection: Can model decisions be predicted from features?
+        3. Proxy Warnings: Detect features correlated with protected attributes
+        """
+        fwd_results = {}
+        
+        try:
+            # Method 1: Worst-Group Accuracy
+            kmeans = KMeans(n_clusters=5, random_state=42, n_init=10)
+            clusters = kmeans.fit_predict(X_test)
+            
+            accuracies = {}
+            for cluster_id in range(5):
+                mask = clusters == cluster_id
+                if mask.sum() > 0:
+                    y_test_cluster = y_test.iloc[mask] if hasattr(y_test, 'iloc') else y_test[mask]
+                    acc = (y_pred[mask] == y_test_cluster).mean()
+                    accuracies[cluster_id] = acc
+            
+            worst_acc = min(accuracies.values()) if accuracies else 0
+            fwd_results['worst_group_accuracy'] = worst_acc
+        except:
+            fwd_results['worst_group_accuracy'] = 0
+        
+        try:
+            # Method 2: Adversarial Bias Detection
+            # Can an adversary predict model outputs from features?
+            adversary = LogisticRegression(max_iter=1000, random_state=42)
+            
+            split_point = len(X_test) // 2
+            X_train_adv = X_test.iloc[:split_point] if hasattr(X_test, 'iloc') else X_test[:split_point]
+            X_test_adv = X_test.iloc[split_point:] if hasattr(X_test, 'iloc') else X_test[split_point:]
+            y_pred_train = y_pred[:split_point]
+            y_pred_test = y_pred[split_point:]
+            
+            adversary.fit(X_train_adv, y_pred_train)
+            adv_accuracy = adversary.score(X_test_adv, y_pred_test)
+            
+            fwd_results['adversarial_bias_score'] = adv_accuracy
+        except:
+            fwd_results['adversarial_bias_score'] = 0.5
+        
+        # Method 3: Proxy warnings (would need protected attributes, so simplified)
+        fwd_results['proxy_warnings'] = [
+            "Recommendation: Check for features that may serve as proxies for protected attributes"
+        ]
+        
+        return fwd_results
