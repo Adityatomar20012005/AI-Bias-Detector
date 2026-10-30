@@ -18,44 +18,27 @@ class DataLoader:
         self.uci_adult_data = None
     
     def load_uci_adult(self, use_cache=True):
-        """
-        Load UCI Adult Income dataset
-        
-        Dataset: Census income (classification task)
-        - 48,842 samples
-        - 14 features
-        - Sensitive: age, sex, race
-        - Target: income (>50K or <=50K)
-        
-        Reference: Lichman, M. (2013). UCI Machine Learning Repository
-        
-        Args:
-            use_cache: Use cached data if available
-        
-        Returns:
-            pandas DataFrame with dataset
-        """
-        
-        try:
-            # Try fetching from UCI ML Repository
-            adult = fetch_ucirepo(id=2)
-            
-            X = adult.data
-            y = adult.targets
-            
-            # Combine X and y
-            df = pd.concat([X, y], axis=1)
-            
-            # Clean column names
-            df.columns = [col.lower().replace(' ', '_') for col in df.columns]
-            
+        """Load UCI Adult Income dataset (features + targets)"""
+
+        def _clean(df):
+            # Normalize column names: 'education-num' -> 'education_num'
+            df.columns = [c.lower().strip().replace(' ', '_').replace('-', '_') for c in df.columns]
+            # Target labels sometimes end with '.', e.g. '<=50K.' -> '<=50K'
+            if 'income' in df.columns:
+                df['income'] = df['income'].astype(str).str.strip().str.rstrip('.')
             return df
-        
+
+        try:
+            adult = fetch_ucirepo(id=2)
+            X = adult.data.features      # ← was adult.data
+            y = adult.data.targets       # ← was adult.targets
+            df = pd.concat([X, y], axis=1)
+            return _clean(df)
+
         except Exception as e:
             print(f"Error loading from UCI ML Repository: {e}")
             print("Attempting alternative loading method...")
-            
-            # Fallback: Try loading from direct CSV URL
+
             try:
                 url = "https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data"
                 column_names = [
@@ -64,19 +47,13 @@ class DataLoader:
                     'capital_gain', 'capital_loss', 'hours_per_week', 'native_country',
                     'income'
                 ]
-                
-                df = pd.read_csv(url, names=column_names, header=None, skipinitialspace=True)
-                
-                # Clean column names
-                df.columns = [col.lower().replace(' ', '_') for col in df.columns]
-                
-                return df
-            
+                df = pd.read_csv(url, names=column_names, header=None,
+                                 skipinitialspace=True, na_values='?')   # '?' → NaN
+                return _clean(df)
+
             except Exception as e2:
                 print(f"Error loading from URL: {e2}")
                 print("Creating synthetic UCI Adult-like dataset...")
-                
-                # Create synthetic dataset with UCI Adult-like structure
                 return self._create_synthetic_adult()
     
     def _create_synthetic_adult(self):
